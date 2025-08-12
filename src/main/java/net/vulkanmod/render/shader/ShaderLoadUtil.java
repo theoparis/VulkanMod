@@ -5,7 +5,10 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.mojang.blaze3d.shaders.ShaderType;
+import com.google.gson.JsonSyntaxException;
+import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.resources.ResourceLocation;
+import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.shader.Pipeline;
 import net.vulkanmod.vulkan.shader.SPIRVUtils;
 import org.apache.commons.io.IOUtils;
@@ -13,6 +16,7 @@ import org.apache.commons.io.IOUtils;
 import java.io.*;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -20,12 +24,44 @@ import java.nio.file.Paths;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.ArrayList;
+import java.util.List;
+
+import static net.vulkanmod.Initializer.LOGGER;
 
 public abstract class ShaderLoadUtil {
-
+    private static String activeShaderPack = "";
     private static final String RESOURCES_PATH = SPIRVUtils.class.getResource("/assets/vulkanmod").toExternalForm();
 
     public static final Set<String> REMAPPED_SHADERS = Sets.newHashSet("core/screenquad.vsh","core/rendertype_item_entity_translucent_cull.vsh");
+
+    public static String getActiveShaderPack() {
+        return activeShaderPack;
+    }
+
+    public static void setActiveShaderPack(String shaderPack) {
+        activeShaderPack = shaderPack;
+        Renderer.scheduleSwapChainUpdate();
+    }
+
+    public static List<String> getAvailableShaderPacks() {
+        Path shaderpacksDir = FabricLoader.getInstance().getGameDir().resolve("shaderpacks");
+
+        if (!Files.exists(shaderpacksDir) || !Files.isDirectory(shaderpacksDir)) {
+            return new ArrayList<>();
+        }
+
+        try (var stream = Files.list(shaderpacksDir)) {
+            return stream
+                    .filter(Files::isDirectory)
+                    .map(Path::getFileName)
+                    .map(Path::toString)
+                    .toList();
+        } catch (IOException e) {
+            LOGGER.error("Error listing shaderpacks directory: {}", shaderpacksDir, e);
+            return new ArrayList<>();
+        }
+    }
 
     public static void loadShaders(Pipeline.Builder pipelineBuilder, JsonObject config, String configName, String path) {
         String vertexShader = config.has("vertex") ? config.get("vertex").getAsString() : configName;
@@ -88,6 +124,13 @@ public abstract class ShaderLoadUtil {
     public static JsonObject getJsonConfig(String path, String rendertype) {
         // Check for external shader
         if (rendertype.contains(String.valueOf(ResourceLocation.NAMESPACE_SEPARATOR))) {
+            JsonObject loadedData = loadShaderPackJson(ResourceLocation.parse(path), path);
+
+            if (loadedData != null) {
+                return loadedData;
+            }
+
+            LOGGER.warn("Shader pack JSON not found for path: {}", path);
             return null;
         }
 
@@ -166,6 +209,72 @@ public abstract class ShaderLoadUtil {
         } catch (Throwable e) {
             throw new RuntimeException(e);
         }
+    }
+
+    public static JsonObject loadShaderPackJson(ResourceLocation shaderPack, String renderType) {
+        Path shaderpacksDir = FabricLoader.getInstance().getGameDir().resolve("shaderpacks");
+
+        if (!Files.exists(shaderpacksDir) || !Files.isDirectory(shaderpacksDir)) {
+        LOGGER.warn("Shaderpacks directory not found at: {}", shaderpacksDir);
+            return null;
+        }
+
+        File[] shaderpackFiles = shaderpacksDir.toFile().listFiles();
+
+        if (shaderpackFiles == null) {
+            LOGGER.warn("Could not list files in shaderpacks directory.");
+            return null;
+        }
+
+        for (File shaderpackFile : shaderpackFiles) {
+            String packName = shaderpackFile.getName();
+
+            try {
+                if (shaderpackFile.isDirectory()) {
+                    String jsonFileName = "%s/shaders/%s/%s.json".formatted(packName, renderType, renderType);
+                    Path jsonFilePath = shaderpackFile.toPath().resolve(jsonFileName);
+
+                    if (Files.exists(jsonFilePath)) {
+                        try (InputStream stream = Files.newInputStream(jsonFilePath)) {
+                            JsonElement jsonElement = JsonParser.parseReader(new BufferedReader(new InputStreamReader(stream)));
+                            return (JsonObject) jsonElement;
+                        } catch (IOException e) {
+                            LOGGER.error("I/O error while reading shaderpack JSON: {}", jsonFileName, e);
+                        }
+                    } else {
+                        LOGGER.warn("Shaderpack JSON file not found: {}", jsonFileName);
+                    }
+                } else if (shaderpackFile.getName().toLowerCase().endsWith(".zip")) {
+                    // Handle .zip archive shaderpacks
+                    String jsonFileName = "shaders/%s/%s.json".formatted(renderType, renderType);
+                    try (FileSystem zipFileSystem = FileSystems.newFileSystem(shaderpackFile.toPath(), (ClassLoader) null)) {
+                        Path jsonFilePath = zipFileSystem.getPath(jsonFileName);
+
+                        if (Files.exists(jsonFilePath)) {
+                            try (InputStream stream = Files.newInputStream(jsonFilePath)) {
+                                JsonElement jsonElement = JsonParser.parseReader(new BufferedReader(new InputStreamReader(stream)));
+                                return (JsonObject) jsonElement;
+                            } catch (IOException e) {
+                                LOGGER.error("I/O error while reading shaderpack JSON from zip: {}", jsonFileName, e);
+                            }
+                        } else {
+                            LOGGER.warn("Shaderpack JSON file not found in zip: {}", jsonFileName);
+                        }
+                    } catch (IOException e) {
+                        LOGGER.error("Error opening shaderpack zip file: {}", packName, e);
+                    }
+                }
+            } catch (JsonSyntaxException e) {
+                LOGGER.error("JSON syntax error in shaderpack: {}", packName, e);
+            } catch (ClassCastException e) {
+                LOGGER.error("Error casting JSON element in shaderpack: {}", packName, e);
+            } catch (Exception e) {
+                LOGGER.error("Unexpected error while processing shaderpack: {}", packName, e);
+            }
+        }
+
+        LOGGER.warn("No valid shaderpack JSON found for render type: {}", renderType);
+        return null;
     }
 
     public static String getShaderSource(String basePath, String rendertype, String shaderName, SPIRVUtils.ShaderKind type) {

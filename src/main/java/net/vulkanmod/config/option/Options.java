@@ -12,10 +12,13 @@ import net.vulkanmod.config.video.VideoModeSet;
 import net.vulkanmod.config.video.WindowMode;
 import net.vulkanmod.render.chunk.WorldRenderer;
 import net.vulkanmod.render.chunk.build.light.LightMode;
+import net.vulkanmod.render.shader.ShaderLoadUtil;
 import net.vulkanmod.render.vertex.TerrainRenderType;
 import net.vulkanmod.vulkan.Renderer;
 import net.vulkanmod.vulkan.device.DeviceManager;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.stream.IntStream;
 
 public abstract class Options {
@@ -333,5 +336,24 @@ public abstract class Options {
                 })
         };
 
+    }
+
+    public static OptionBlock[] getShaderPackOpts() {
+        return new OptionBlock[]{
+                new OptionBlock("", new Option<?>[]{
+                        new ListOption<>(
+                                Component.translatable("vulkanmod.options.shaderPackSelector.none"),
+                                ShaderLoadUtil::getAvailableShaderPacks,
+                                ShaderLoadUtil::setActiveShaderPack,
+                                ShaderLoadUtil::getActiveShaderPack
+                        )
+                       .setTranslator(
+                            shaderPack -> Component.nullToEmpty(shaderPack == null
+                                    ? Component.translatable("vulkanmod.options.shaderPackSelector.none").getString()
+                                    : shaderPack
+                            )
+                        )
+                }),
+        };
     }
 }
